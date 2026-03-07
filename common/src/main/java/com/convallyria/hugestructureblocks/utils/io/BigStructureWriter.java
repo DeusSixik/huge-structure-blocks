@@ -47,15 +47,13 @@ public class BigStructureWriter implements AutoCloseable {
     }
 
     public void startWrite(int cx, int sy, int cz, WorldChunk chunk, BlockBox structureBox) throws IOException {
-        Path parentDir = filePath.getParent();
-        if (parentDir != null) {
-            Files.createDirectories(parentDir);
-        }
-
-        if(this.out == null)
+        if (this.out == null) {
+            Path parentDir = filePath.getParent();
+            if (parentDir != null) {
+                Files.createDirectories(parentDir);
+            }
             this.out = createStream(filePath);
-        else
-            this.out.flush();
+        }
 
 
         writeSection(cx, sy, cz, chunk, structureBox);

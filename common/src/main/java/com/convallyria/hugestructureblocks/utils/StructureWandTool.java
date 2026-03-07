@@ -1,7 +1,9 @@
 package com.convallyria.hugestructureblocks.utils;
 
 import com.convallyria.hugestructureblocks.HugeStructureBlocksMod;
+import com.convallyria.hugestructureblocks.utils.io.BigStructureReader;
 import com.convallyria.hugestructureblocks.utils.io.BigStructureWriter;
+import com.convallyria.hugestructureblocks.utils.io.StructureLoadTask;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import dev.architectury.event.CompoundEventResult;
@@ -17,6 +19,7 @@ import net.minecraft.util.WorldSavePath;
 import net.minecraft.util.math.BlockBox;
 import net.minecraft.util.math.BlockPos;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.UUID;
@@ -88,6 +91,12 @@ public class StructureWandTool {
                     )
                     .then(CommandManager.literal("wand")
                             .executes(StructureWandTool::executeGiveWand)
+                    )
+
+                    .then(CommandManager.literal("load")
+                            .then(CommandManager.argument("name", StringArgumentType.string())
+                                    .executes(StructureWandTool::executeLoad)
+                            )
                     )
             );
         });
@@ -176,5 +185,37 @@ public class StructureWandTool {
         boolean isComplete() {
             return pos1 != null && pos2 != null;
         }
+    }
+
+    private static int executeLoad(CommandContext<ServerCommandSource> context) {
+        ServerCommandSource source = context.getSource();
+        ServerPlayerEntity player = source.getPlayer();
+
+        if (player == null) return 0;
+
+        String name = StringArgumentType.getString(context, "name");
+        Path filePath = source.getServer().getSavePath(WorldSavePath.GENERATED).resolve("bts_structures/" + name + ".bin");
+
+        // Быстрая проверка до аллокации ридера
+        if (!Files.exists(filePath)) {
+            source.sendError(Text.literal("Файл структуры не найден: " + name));
+            return 0;
+        }
+
+        source.sendFeedback(() -> Text.literal("Запуск фоновой загрузки структуры: " + name), false);
+
+        try {
+            BigStructureReader reader = new BigStructureReader(filePath);
+
+            // ВАЖНО: Передаем нули в качестве смещения (offsets)
+            StructureLoadTask task = new StructureLoadTask(player.getServerWorld(), reader, 0, 0, 0);
+            task.start();
+
+        } catch (Exception e) {
+            source.sendError(Text.literal("Ошибка инициализации чтения: " + e.getMessage()));
+            e.printStackTrace();
+        }
+
+        return 1;
     }
 }
