@@ -1,11 +1,13 @@
 package com.convallyria.hugestructureblocks.neoforge;
 
 import com.convallyria.hugestructureblocks.HugeStructureBlocksMod;
+import dev.architectury.platform.Platform;
 import net.minecraft.item.ItemGroup;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
+import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.registries.DeferredRegister;
@@ -39,5 +41,8 @@ public final class HSBForge {
         HugeStructureBlocksMod.init();
 
         ITEM_GROUPS.register(modBus);
+
+        if(Platform.getEnv() == Dist.CLIENT)
+            HSBNeoForgeClient.init();
     }
 }
