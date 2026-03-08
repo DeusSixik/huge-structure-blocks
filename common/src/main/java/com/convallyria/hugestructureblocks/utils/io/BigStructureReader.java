@@ -5,6 +5,7 @@ import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.network.PacketByteBuf;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.chunk.PalettedContainer;
 
 import java.io.BufferedInputStream;
@@ -17,6 +18,7 @@ import java.util.zip.GZIPInputStream;
 
 public class BigStructureReader implements AutoCloseable {
 
+    public final BlockPos origin;
     private final DataInputStream in;
     private final PacketByteBuf buffer;
 
@@ -27,6 +29,11 @@ public class BigStructureReader implements AutoCloseable {
                 )
         );
         this.buffer = new PacketByteBuf(Unpooled.buffer());
+
+        int ox = in.readInt();
+        int oy = in.readInt();
+        int oz = in.readInt();
+        this.origin = new BlockPos(ox, oy, oz);
     }
 
     public SectionData readNextSection() throws IOException {

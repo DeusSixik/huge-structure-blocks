@@ -20,8 +20,8 @@ public abstract class StructureTemplateManagerMixin {
     @Shadow
     public abstract Path getTemplatePath(Identifier id, String extension);
 
-    @Redirect(method = {"getTemplateOrBlank"}, at = @At(value = "NEW", target = "()Lnet/minecraft/structure/StructureTemplate;"))
-    public StructureTemplate bts$createStructureTemplate() {
-        return new BTSStructureTemplate(new BigStructureWriter(getTemplatePath(Identifier.of("sdm_test"), ".nbt")));
-    }
+//    @Redirect(method = {"getTemplateOrBlank"}, at = @At(value = "NEW", target = "()Lnet/minecraft/structure/StructureTemplate;"))
+//    public StructureTemplate bts$createStructureTemplate() {
+//        return new BTSStructureTemplate(new BigStructureWriter(getTemplatePath(Identifier.of("sdm_test"), ".nbt")));
+//    }
 }

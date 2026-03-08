@@ -148,11 +148,16 @@ public class StructureWandTool {
         Path filePath = source.getServer().getSavePath(WorldSavePath.GENERATED).resolve("bts_structures/" + name + ".bin");
 
         try {
-            BigStructureWriter writer = new BigStructureWriter(filePath);
+            BlockBox box = BlockBox.create(sel.pos1, sel.pos2);
+
+            BlockPos minPos = new BlockPos(box.getMinX(), box.getMinY(), box.getMinZ());
+
+            BigStructureWriter writer = new BigStructureWriter(filePath, minPos);
             BTSStructureTemplate template = new BTSStructureTemplate(writer);
 
-            BlockBox box = BlockBox.create(sel.pos1, sel.pos2);
-            template.saveFromWorld(player.getServerWorld(), new BlockPos(box.getMinX(), box.getMinY(), box.getMinZ()), box.getDimensions(), false, null);
+            template.saveFromWorld(player.getServerWorld(), minPos, box.getDimensions(), false, null);
+
+            source.sendFeedback(() -> Text.literal("Сохранение структуры " + name + " запущено в фоне."), false);
 
         } catch (Exception e) {
             source.sendError(Text.literal("Ошибка: " + e.getMessage()));
@@ -207,8 +212,15 @@ public class StructureWandTool {
         try {
             BigStructureReader reader = new BigStructureReader(filePath);
 
-            // ВАЖНО: Передаем нули в качестве смещения (offsets)
-            StructureLoadTask task = new StructureLoadTask(player.getServerWorld(), reader, 0, 0, 0);
+            // Берем позицию игрока (куда вставляем)
+            BlockPos playerPos = player.getBlockPos();
+
+            // HOT PATH: Вычисляем разницу в ЧАНКАХ (сдвиг вправо на 4 эквивалентен делению на 16)
+            int offsetCx = (playerPos.getX() >> 4) - (reader.origin.getX() >> 4);
+            int offsetSy = (playerPos.getY() >> 4) - (reader.origin.getY() >> 4);
+            int offsetCz = (playerPos.getZ() >> 4) - (reader.origin.getZ() >> 4);
+
+            StructureLoadTask task = new StructureLoadTask(player.getServerWorld(), reader, offsetCx, offsetSy, offsetCz);
             task.start();
 
         } catch (Exception e) {

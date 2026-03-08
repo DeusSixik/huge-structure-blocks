@@ -6,6 +6,7 @@ import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.network.PacketByteBuf;
 import net.minecraft.util.math.BlockBox;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import net.minecraft.world.chunk.ChunkSection;
 import net.minecraft.world.chunk.PalettedContainer;
@@ -21,13 +22,15 @@ import java.util.zip.GZIPOutputStream;
 
 public class BigStructureWriter implements AutoCloseable {
 
+    public final BlockPos origin;
     public final Path filePath;
     protected @Nullable DataOutputStream out;
     protected final PacketByteBuf buffer;
 
     protected final PalettedContainer<BlockState> sectionBuffer;
 
-    public BigStructureWriter(Path filePath) {
+    public BigStructureWriter(Path filePath, BlockPos origin) {
+        this.origin = origin;
         this.filePath = filePath;
         this.buffer = new PacketByteBuf(Unpooled.buffer());
 
@@ -53,9 +56,12 @@ public class BigStructureWriter implements AutoCloseable {
                 Files.createDirectories(parentDir);
             }
             this.out = createStream(filePath);
+
+            // ВАЖНО: Сохраняем точку отсчета в заголовок файла
+            this.out.writeInt(origin.getX());
+            this.out.writeInt(origin.getY());
+            this.out.writeInt(origin.getZ());
         }
-
-
         writeSection(cx, sy, cz, chunk, structureBox);
     }
 
