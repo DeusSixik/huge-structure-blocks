@@ -4,6 +4,7 @@ import io.netty.buffer.Unpooled;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.nbt.NbtCompound;
 import net.minecraft.network.PacketByteBuf;
 import net.minecraft.util.math.BlockBox;
 import net.minecraft.util.math.BlockPos;
@@ -18,6 +19,8 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.zip.GZIPOutputStream;
 
 public class BigStructureWriter implements AutoCloseable {
@@ -87,15 +90,26 @@ public class BigStructureWriter implements AutoCloseable {
         PalettedContainer<BlockState> source = section.getBlockStateContainer();
         boolean hasData = false;
 
-        // 2. HOT PATH: Копируем только нужные блоки во временный буфер
+        List<BEData> blockEntities = new ArrayList<>();
+
         for (int y = minY; y <= maxY; y++) {
             for (int z = minZ; z <= maxZ; z++) {
                 for (int x = minX; x <= maxX; x++) {
                     BlockState state = source.get(x, y, z);
-                    // Опционально: можно отфильтровывать воздух, если не хочешь стирать блоки воздухом
                     if (!state.isAir()) {
                         sectionBuffer.set(x, y, z, state);
                         hasData = true;
+
+                        // Сбор BlockEntity
+                        if (state.hasBlockEntity()) {
+                            BlockPos globalPos = new BlockPos((cx << 4) + x, (sy << 4) + y, (cz << 4) + z);
+                            net.minecraft.block.entity.BlockEntity be = chunk.getBlockEntity(globalPos, WorldChunk.CreationType.IMMEDIATE);
+                            if (be != null) {
+                                net.minecraft.nbt.NbtCompound nbt = be.createNbtWithId(chunk.getWorld().getRegistryManager());
+                                if (nbt != null)
+                                    blockEntities.add(new BEData(x, y, z, nbt));
+                            }
+                        }
                     }
                 }
             }
@@ -104,22 +118,27 @@ public class BigStructureWriter implements AutoCloseable {
         if (!hasData) return; // Не пишем пустые куски
 
         // 3. Пишем заголовок секции и её локальные границы
-        out.writeInt(cx);
-        out.writeInt(sy);
-        out.writeInt(cz);
+        out.writeByte(1);
+
+        out.writeInt(cx); out.writeInt(sy); out.writeInt(cz);
         out.writeByte(minX); out.writeByte(minY); out.writeByte(minZ);
         out.writeByte(maxX); out.writeByte(maxY); out.writeByte(maxZ);
 
-        // 4. Сериализуем отфильтрованный контейнер (Netty bit-packing)
         buffer.clear();
         sectionBuffer.writePacket(buffer);
-
         int length = buffer.readableBytes();
         out.writeInt(length);
         buffer.readBytes(out, length);
 
-        // 5. HOT PATH CLEANUP: Сбрасываем только измененную зону обратно в STRUCTURE_VOID
-        // Это позволяет переиспользовать один инстанс PalettedContainer для всего сохранения
+        // Записываем NBT BlockEntity в конец секции
+        out.writeInt(blockEntities.size());
+        for (BEData be : blockEntities) {
+            out.writeByte(be.lx);
+            out.writeByte(be.ly);
+            out.writeByte(be.lz);
+            net.minecraft.nbt.NbtIo.write(be.nbt, (java.io.DataOutput) out);
+        }
+
         BlockState voidState = Blocks.STRUCTURE_VOID.getDefaultState();
         for (int y = minY; y <= maxY; y++) {
             for (int z = minZ; z <= maxZ; z++) {
@@ -130,10 +149,28 @@ public class BigStructureWriter implements AutoCloseable {
         }
     }
 
+    public void writeEntity(net.minecraft.entity.Entity entity) throws IOException {
+        if (this.out == null) return;
+        net.minecraft.nbt.NbtCompound nbt = new net.minecraft.nbt.NbtCompound();
+        // saveNbt вернет false для пассажиров (чтобы не дублировать) или игроков
+        if (entity.saveNbt(nbt)) {
+            out.writeByte(2); // ВАЖНО: Маркер 2 - Entity
+            net.minecraft.util.math.Vec3d vec = entity.getPos().subtract(origin.getX(), origin.getY(), origin.getZ());
+            out.writeDouble(vec.x);
+            out.writeDouble(vec.y);
+            out.writeDouble(vec.z);
+            net.minecraft.nbt.NbtIo.write(nbt, (java.io.DataOutput) out);
+        }
+    }
+
     @Override
     public void close() throws Exception {
-        out.flush();
-        out.close();
+        if (out != null) {
+            out.flush();
+            out.close();
+        }
         buffer.release();
     }
+
+    private record BEData(int lx, int ly, int lz, NbtCompound nbt) {}
 }

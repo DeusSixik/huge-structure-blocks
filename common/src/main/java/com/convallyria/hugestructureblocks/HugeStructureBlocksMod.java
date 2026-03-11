@@ -6,6 +6,7 @@ import dev.architectury.platform.Platform;
 import net.fabricmc.api.EnvType;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
+import net.minecraft.server.world.ServerWorld;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 

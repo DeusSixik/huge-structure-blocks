@@ -104,6 +104,26 @@ public class StructureSaveTask {
                 System.err.println("Failed to write section at " + cx + "," + sectionY + "," + cz);
             }
         }
+
+        net.minecraft.util.math.Box chunkBox = new net.minecraft.util.math.Box(cx * 16, start.getY(), cz * 16, cx * 16 + 16, end.getY(), cz * 16 + 16);
+        net.minecraft.util.math.Box intersect = chunkBox.intersection(new net.minecraft.util.math.Box(
+                start.getX(), start.getY(), start.getZ(),
+                end.getX(), end.getY(), end.getZ()
+        ));
+
+        List<net.minecraft.entity.Entity> entities = world.getEntitiesByClass(
+                net.minecraft.entity.Entity.class,
+                intersect,
+                e -> !(e instanceof net.minecraft.entity.player.PlayerEntity)
+        );
+
+        for (net.minecraft.entity.Entity e : entities) {
+            try {
+                writer.writeEntity(e);
+            } catch (IOException ex) {
+                System.err.println("Failed to write entity: " + ex.getMessage());
+            }
+        }
     }
 
     private void finish() {
