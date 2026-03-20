@@ -1,15 +1,18 @@
 package com.convallyria.hugestructureblocks.utils;
 
 import com.convallyria.hugestructureblocks.HugeStructureBlocksMod;
+import com.convallyria.hugestructureblocks.config.BSConfig;
 import com.convallyria.hugestructureblocks.utils.io.BigStructureReader;
 import com.convallyria.hugestructureblocks.utils.io.BigStructureWriter;
 import com.convallyria.hugestructureblocks.utils.io.StructureLoadTask;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.suggestion.SuggestionProvider;
 import dev.architectury.event.CompoundEventResult;
 import dev.architectury.event.EventResult;
 import dev.architectury.event.events.common.CommandRegistrationEvent;
 import dev.architectury.event.events.common.InteractionEvent;
+import net.minecraft.command.CommandSource;
 import net.minecraft.item.ItemStack;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
@@ -18,16 +21,45 @@ import net.minecraft.text.Text;
 import net.minecraft.util.WorldSavePath;
 import net.minecraft.util.math.BlockBox;
 import net.minecraft.util.math.BlockPos;
+import org.jetbrains.annotations.NotNull;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
 public class StructureWandTool {
 
     private static final Map<UUID, Selection> SELECTIONS = new ConcurrentHashMap<>();
+
+    // Провайдер подсказок для автодополнения (Tab)
+    private static final SuggestionProvider<ServerCommandSource> SUGGEST_STRUCTURES = (context, builder) -> {
+        Path folder = BSConfig.STRUCTURES_FOLDER;
+        if (!Files.exists(folder)) {
+            return builder.buildFuture();
+        }
+
+        try (Stream<Path> paths = Files.walk(folder)) {
+            paths.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".bin"))
+                    .forEach(p -> {
+                        String relativePath = folder.relativize(p).toString();
+                        relativePath = relativePath.replace('\\', '/');
+                        String suggestion = relativePath.substring(0, relativePath.length() - 4);
+
+                        if (CommandSource.shouldSuggest(builder.getRemaining(), suggestion)) {
+                            builder.suggest(suggestion);
+                        }
+                    });
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        return builder.buildFuture();
+    };
 
     public static void register() {
         registerEvents();
@@ -95,6 +127,7 @@ public class StructureWandTool {
 
                     .then(CommandManager.literal("load")
                             .then(CommandManager.argument("name", StringArgumentType.string())
+                                    .suggests(SUGGEST_STRUCTURES)
                                     .executes(StructureWandTool::executeLoad)
                             )
                     )
@@ -145,7 +178,7 @@ public class StructureWandTool {
         }
 
         String name = StringArgumentType.getString(context, "name");
-        Path filePath = source.getServer().getSavePath(WorldSavePath.GENERATED).resolve("bts_structures/" + name + ".bin");
+        Path filePath = BSConfig.STRUCTURES_FOLDER.resolve(name + ".bin");
 
         try {
             BlockBox box = BlockBox.create(sel.pos1, sel.pos2);
@@ -199,9 +232,8 @@ public class StructureWandTool {
         if (player == null) return 0;
 
         String name = StringArgumentType.getString(context, "name");
-        Path filePath = source.getServer().getSavePath(WorldSavePath.GENERATED).resolve("bts_structures/" + name + ".bin");
+        Path filePath = BSConfig.STRUCTURES_FOLDER.resolve(name + ".bin");
 
-        // Быстрая проверка до аллокации ридера
         if (!Files.exists(filePath)) {
             source.sendError(Text.literal("Файл структуры не найден: " + name));
             return 0;
@@ -210,24 +242,24 @@ public class StructureWandTool {
         source.sendFeedback(() -> Text.literal("Запуск фоновой загрузки структуры: " + name), false);
 
         try {
-            BigStructureReader reader = new BigStructureReader(filePath);
-
-            // Берем позицию игрока (куда вставляем)
-            BlockPos playerPos = player.getBlockPos();
-
-            // HOT PATH: Вычисляем разницу в ЧАНКАХ (сдвиг вправо на 4 эквивалентен делению на 16)
-            int offsetCx = (playerPos.getX() >> 4) - (reader.origin.getX() >> 4);
-            int offsetSy = (playerPos.getY() >> 4) - (reader.origin.getY() >> 4);
-            int offsetCz = (playerPos.getZ() >> 4) - (reader.origin.getZ() >> 4);
-
-            StructureLoadTask task = new StructureLoadTask(player.getServerWorld(), reader, offsetCx, offsetSy, offsetCz);
-            task.start();
-
+            getStructureLoadTask(filePath, player).start();
         } catch (Exception e) {
             source.sendError(Text.literal("Ошибка инициализации чтения: " + e.getMessage()));
             e.printStackTrace();
         }
 
         return 1;
+    }
+
+    private static @NotNull StructureLoadTask getStructureLoadTask(Path filePath, ServerPlayerEntity player) throws IOException {
+        BigStructureReader reader = new BigStructureReader(filePath);
+
+        BlockPos playerPos = player.getBlockPos();
+
+        int offsetX = playerPos.getX() - reader.origin.getX();
+        int offsetY = playerPos.getY() - reader.origin.getY();
+        int offsetZ = playerPos.getZ() - reader.origin.getZ();
+
+        return new StructureLoadTask(player.getServerWorld(), reader, offsetX, offsetY, offsetZ);
     }
 }

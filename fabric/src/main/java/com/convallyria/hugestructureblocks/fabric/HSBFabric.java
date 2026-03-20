@@ -1,9 +1,11 @@
 package com.convallyria.hugestructureblocks.fabric;
 
 import com.convallyria.hugestructureblocks.HugeStructureBlocksMod;
+import net.fabricmc.api.Environment;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.itemgroup.v1.FabricItemGroup;
 import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.item.ItemGroup;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
@@ -23,6 +25,8 @@ public final class HSBFabric implements ModInitializer {
 
     @Override
     public void onInitialize() {
+        HugeStructureBlocksMod.CONFIG_PATH = FabricLoader.getInstance().getConfigDir();
+
         // This code runs as soon as Minecraft is in a mod-load-ready state.
         // However, some things (like resources) may still be uninitialized.
         // Proceed with mild caution.

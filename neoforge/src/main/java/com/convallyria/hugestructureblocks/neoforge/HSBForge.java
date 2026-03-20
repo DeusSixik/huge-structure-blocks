@@ -10,6 +10,7 @@ import net.minecraft.text.Text;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
 import java.util.function.Supplier;
@@ -38,6 +39,8 @@ public final class HSBForge {
 
     public HSBForge(IEventBus modBus) {
         // Run our common setup.
+        HugeStructureBlocksMod.CONFIG_PATH = FMLPaths.CONFIGDIR.get();
+
         HugeStructureBlocksMod.init();
 
         ITEM_GROUPS.register(modBus);

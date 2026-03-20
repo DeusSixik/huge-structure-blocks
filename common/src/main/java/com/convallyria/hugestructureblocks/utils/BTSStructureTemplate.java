@@ -26,7 +26,6 @@ public class BTSStructureTemplate extends StructureTemplate {
         BlockPos end = start.add(dimensions).add(-1, -1, -1);
 
         // Запускаем State Machine
-        StructureSaveTask task = new StructureSaveTask(serverWorld, writer, start, end);
-        task.start();
+        new StructureSaveTask(serverWorld, writer, start, end).start();
     }
 }

@@ -1,5 +1,6 @@
 package com.convallyria.hugestructureblocks.utils.io;
 
+import com.convallyria.hugestructureblocks.HugeStructureBlocksMod;
 import dev.architectury.event.events.common.TickEvent;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ChunkTicketType;
@@ -50,7 +51,6 @@ public class StructureSaveTask {
     }
 
     public void start() {
-        world.getPlayers().forEach(p -> p.sendMessage(Text.literal("Сохранение начато... (" + pendingChunks.size() + " чанков)")));
         TickEvent.SERVER_POST.register(this::tick);
     }
 
@@ -130,9 +130,8 @@ public class StructureSaveTask {
         isFinished = true;
         try {
             writer.close();
-            world.getPlayers().forEach(p -> p.sendMessage(Text.literal("Структура успешно сохранена: " + writer.filePath)));
         } catch (Exception e) {
-            world.getPlayers().forEach(p -> p.sendMessage(Text.literal("Ошибка финализации: " + e.getMessage())));
+            HugeStructureBlocksMod.LOGGER.error(e.getMessage(), e);
         }
     }
 }
