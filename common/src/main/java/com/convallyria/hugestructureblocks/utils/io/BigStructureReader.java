@@ -24,6 +24,10 @@ public class BigStructureReader implements AutoCloseable {
     private final DataInputStream in;
     private final PacketByteBuf buffer;
 
+    public final int sizeX;
+    public final int sizeY;
+    public final int sizeZ;
+
     public BigStructureReader(Path filePath) throws IOException {
         this.in = new DataInputStream(
                 new BufferedInputStream(
@@ -36,6 +40,10 @@ public class BigStructureReader implements AutoCloseable {
         int oy = in.readInt();
         int oz = in.readInt();
         this.origin = new BlockPos(ox, oy, oz);
+
+        this.sizeX = in.readInt();
+        this.sizeY = in.readInt();
+        this.sizeZ = in.readInt();
     }
 
     public Object readNextRecord() throws IOException {

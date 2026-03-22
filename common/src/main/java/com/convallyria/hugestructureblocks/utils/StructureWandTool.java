@@ -1,6 +1,8 @@
 package com.convallyria.hugestructureblocks.utils;
 
 import com.convallyria.hugestructureblocks.HugeStructureBlocksMod;
+import com.convallyria.hugestructureblocks.api.BTSStructuresAPI;
+import com.convallyria.hugestructureblocks.api.exceptions.StructureGenerationException;
 import com.convallyria.hugestructureblocks.config.BSConfig;
 import com.convallyria.hugestructureblocks.utils.io.BigStructureReader;
 import com.convallyria.hugestructureblocks.utils.io.BigStructureWriter;
@@ -232,34 +234,14 @@ public class StructureWandTool {
         if (player == null) return 0;
 
         String name = StringArgumentType.getString(context, "name");
-        Path filePath = BSConfig.STRUCTURES_FOLDER.resolve(name + ".bin");
-
-        if (!Files.exists(filePath)) {
-            source.sendError(Text.literal("Файл структуры не найден: " + name));
-            return 0;
-        }
-
-        source.sendFeedback(() -> Text.literal("Запуск фоновой загрузки структуры: " + name), false);
 
         try {
-            getStructureLoadTask(filePath, player).start();
-        } catch (Exception e) {
+            BTSStructuresAPI.loadStructure(player.getServerWorld(), player.getBlockPos(), name);
+        }
+        catch (Exception e) {
             source.sendError(Text.literal("Ошибка инициализации чтения: " + e.getMessage()));
-            e.printStackTrace();
         }
 
         return 1;
-    }
-
-    private static @NotNull StructureLoadTask getStructureLoadTask(Path filePath, ServerPlayerEntity player) throws IOException {
-        BigStructureReader reader = new BigStructureReader(filePath);
-
-        BlockPos playerPos = player.getBlockPos();
-
-        int offsetX = playerPos.getX() - reader.origin.getX();
-        int offsetY = playerPos.getY() - reader.origin.getY();
-        int offsetZ = playerPos.getZ() - reader.origin.getZ();
-
-        return new StructureLoadTask(player.getServerWorld(), reader, offsetX, offsetY, offsetZ);
     }
 }

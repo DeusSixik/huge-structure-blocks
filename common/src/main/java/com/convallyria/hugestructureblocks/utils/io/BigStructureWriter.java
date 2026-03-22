@@ -64,6 +64,10 @@ public class BigStructureWriter implements AutoCloseable {
             this.out.writeInt(origin.getX());
             this.out.writeInt(origin.getY());
             this.out.writeInt(origin.getZ());
+
+            this.out.writeInt(structureBox.getBlockCountX());
+            this.out.writeInt(structureBox.getBlockCountY());
+            this.out.writeInt(structureBox.getBlockCountZ());
         }
         writeSection(cx, sy, cz, chunk, structureBox);
     }

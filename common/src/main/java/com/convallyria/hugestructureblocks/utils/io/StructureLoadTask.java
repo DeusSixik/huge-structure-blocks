@@ -1,6 +1,5 @@
 package com.convallyria.hugestructureblocks.utils.io;
 
-import com.convallyria.hugestructureblocks.utils.data.BlockEntityData;
 import dev.architectury.event.events.common.TickEvent;
 import dev.architectury.platform.Platform;
 import net.minecraft.block.BlockState;
@@ -8,10 +7,8 @@ import net.minecraft.block.Blocks;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ChunkTicketType;
 import net.minecraft.server.world.ServerWorld;
-import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
-import net.minecraft.util.math.ChunkSectionPos;
 import net.minecraft.world.chunk.*;
 
 import java.io.IOException;
@@ -26,7 +23,6 @@ public class StructureLoadTask {
     private final ServerWorld world;
     private final BigStructureReader reader;
 
-    // Теперь это точное смещение в БЛОКАХ
     private final int offsetX;
     private final int offsetY;
     private final int offsetZ;
@@ -61,7 +57,6 @@ public class StructureLoadTask {
                 } else if (record instanceof BigStructureReader.SectionData data) {
                     pendingSections.add(data);
 
-                    // Вычисляем, какие чанки заденет эта секция при точном смещении
                     int minGx = (data.cx() << 4) + data.minX() + offsetX;
                     int maxGx = (data.cx() << 4) + data.maxX() + offsetX;
                     int minGz = (data.cz() << 4) + data.minZ() + offsetZ;
@@ -70,7 +65,6 @@ public class StructureLoadTask {
                     int minCx = minGx >> 4; int maxCx = maxGx >> 4;
                     int minCz = minGz >> 4; int maxCz = maxGz >> 4;
 
-                    // Запрашиваем тикеты для всех задетых чанков (от 1 до 4 штук на секцию)
                     for (int cx = minCx; cx <= maxCx; cx++) {
                         for (int cz = minCz; cz <= maxCz; cz++) {
                             ChunkPos targetPos = new ChunkPos(cx, cz);
@@ -91,7 +85,6 @@ public class StructureLoadTask {
                 int minCx = minGx >> 4; int maxCx = maxGx >> 4;
                 int minCz = minGz >> 4; int maxCz = maxGz >> 4;
 
-                // Проверяем, что ВСЕ нужные чанки прогрузились с диска
                 for (int cx = minCx; cx <= maxCx; cx++) {
                     for (int cz = minCz; cz <= maxCz; cz++) {
                         if (!world.isChunkLoaded(cx, cz)) return false;
@@ -99,10 +92,8 @@ public class StructureLoadTask {
                     }
                 }
 
-                // Вставляем блоки с ювелирной точностью
                 mergeSectionIntoWorld(data);
 
-                // Очищаем тикеты
                 for (int cx = minCx; cx <= maxCx; cx++) {
                     for (int cz = minCz; cz <= maxCz; cz++) {
                         ChunkPos targetPos = new ChunkPos(cx, cz);
@@ -112,7 +103,6 @@ public class StructureLoadTask {
                 return true;
             });
 
-            // Отправка пакетов
             if (!chunksToUpdateClient.isEmpty()) {
                 int viewDistance = world.getServer().getPlayerManager().getViewDistance();
                 Iterator<Map.Entry<WorldChunk, Integer>> iterator = chunksToUpdateClient.entrySet().iterator();
@@ -162,84 +152,92 @@ public class StructureLoadTask {
         BlockState voidState = Blocks.STRUCTURE_VOID.getDefaultState();
         PalettedContainer<BlockState> sourceContainer = data.container();
 
-        // Кэш для быстрого переключения контейнеров
-        WorldChunk currentChunk = null;
-        ChunkSection currentSection = null;
-        PalettedContainer<BlockState> currentContainer = null;
-        int currentCx = Integer.MAX_VALUE, currentCz = Integer.MAX_VALUE, currentSy = Integer.MAX_VALUE;
+        int minGx = (data.cx() << 4) + data.minX() + offsetX;
+        int maxGx = (data.cx() << 4) + data.maxX() + offsetX;
+        int minGy = (data.sy() << 4) + data.minY() + offsetY;
+        int maxGy = (data.sy() << 4) + data.maxY() + offsetY;
+        int minGz = (data.cz() << 4) + data.minZ() + offsetZ;
+        int maxGz = (data.cz() << 4) + data.maxZ() + offsetZ;
 
-        try {
-            BlockPos.Mutable mutable = new BlockPos.Mutable();
-            for (int y = data.minY(); y <= data.maxY(); y++) {
-                int gy = (data.sy() << 4) + y + offsetY;
-                int sy = gy >> 4;
-                int ly = gy & 15;
+        int minCx = minGx >> 4; int maxCx = maxGx >> 4;
+        int minSy = minGy >> 4; int maxSy = maxGy >> 4;
+        int minCz = minGz >> 4; int maxCz = maxGz >> 4;
 
-                for (int z = data.minZ(); z <= data.maxZ(); z++) {
-                    int gz = (data.cz() << 4) + z + offsetZ;
-                    int cz = gz >> 4;
-                    int lz = gz & 15;
+        BlockPos.Mutable mutable = new BlockPos.Mutable();
 
-                    for (int x = data.minX(); x <= data.maxX(); x++) {
-                        BlockState state = sourceContainer.get(x, y, z);
-                        if (state != voidState) {
-                            int gx = (data.cx() << 4) + x + offsetX;
-                            int cx = gx >> 4;
-                            int lx = gx & 15;
+        for (int tCx = minCx; tCx <= maxCx; tCx++) {
+            for (int tCz = minCz; tCz <= maxCz; tCz++) {
+                WorldChunk targetChunk = world.getChunk(tCx, tCz);
+                if (targetChunk == null) continue;
 
-                            // Умное переключение чанков и блокировок "на лету"
-                            if (cx != currentCx || cz != currentCz || sy != currentSy) {
-                                if (currentContainer != null) currentContainer.unlock();
+                for (int tSy = minSy; tSy <= maxSy; tSy++) {
+                    int sectionIndex = targetChunk.sectionCoordToIndex(tSy);
+                    if (sectionIndex < 0 || sectionIndex >= targetChunk.getSectionArray().length) continue;
 
-                                currentCx = cx; currentCz = cz; currentSy = sy;
-                                currentChunk = world.getChunk(cx, cz);
+                    ChunkSection targetSection = targetChunk.getSectionArray()[sectionIndex];
+                    boolean wasEmpty = (targetSection == null || targetSection.isEmpty());
 
-                                int sectionIndex = currentChunk.sectionCoordToIndex(sy);
-                                if (sectionIndex >= 0 && sectionIndex < currentChunk.getSectionArray().length) {
-                                    currentSection = currentChunk.getSectionArray()[sectionIndex];
-                                    boolean wasEmpty = (currentSection == null || currentSection.isEmpty());
-                                    if (currentSection == null) {
-                                        currentSection = new ChunkSection(world.getRegistryManager().get(net.minecraft.registry.RegistryKeys.BIOME));
-                                        currentChunk.getSectionArray()[sectionIndex] = currentSection;
+                    if (targetSection == null) {
+                        targetSection = new ChunkSection(world.getRegistryManager().get(net.minecraft.registry.RegistryKeys.BIOME));
+                        targetChunk.getSectionArray()[sectionIndex] = targetSection;
+                    }
+
+                    if (wasEmpty) {
+                        world.getLightingProvider().setSectionStatus(net.minecraft.util.math.ChunkSectionPos.from(tCx, tSy, tCz), false);
+                    }
+
+                    PalettedContainer<BlockState> targetContainer = targetSection.getBlockStateContainer();
+
+                    int startGx = Math.max(tCx << 4, minGx);
+                    int endGx = Math.min((tCx << 4) + 15, maxGx);
+                    int startGy = Math.max(tSy << 4, minGy);
+                    int endGy = Math.min((tSy << 4) + 15, maxGy);
+                    int startGz = Math.max(tCz << 4, minGz);
+                    int endGz = Math.min((tCz << 4) + 15, maxGz);
+
+                    targetContainer.lock();
+                    try {
+                        for (int gy = startGy; gy <= endGy; gy++) {
+                            int y = gy - offsetY - (data.sy() << 4);
+                            int ly = gy & 15;
+
+                            for (int gz = startGz; gz <= endGz; gz++) {
+                                int z = gz - offsetZ - (data.cz() << 4);
+                                int lz = gz & 15;
+
+                                for (int gx = startGx; gx <= endGx; gx++) {
+                                    int x = gx - offsetX - (data.cx() << 4);
+                                    int lx = gx & 15;
+
+                                    BlockState state = sourceContainer.get(x, y, z);
+                                    if (state != voidState) {
+                                        BlockState oldState = targetContainer.swapUnsafe(lx, ly, lz, state);
+
+                                        if (oldState != state) {
+                                            targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING).trackUpdate(lx, gy, lz, state);
+                                            targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.WORLD_SURFACE).trackUpdate(lx, gy, lz, state);
+
+                                            if (!moonriseLoaded) {
+                                                targetChunk.getChunkSkyLight().isSkyLightAccessible(targetChunk, lx, gy, lz);
+                                            }
+
+                                            world.getLightingProvider().checkBlock(mutable.set(gx, gy, gz));
+
+                                            targetChunk.setNeedsSaving(true);
+                                            chunksToUpdateClient.putIfAbsent(targetChunk, 0);
+                                        }
                                     }
-                                    if (wasEmpty) {
-                                        world.getLightingProvider().setSectionStatus(net.minecraft.util.math.ChunkSectionPos.from(cx, sy, cz), false);
-                                    }
-                                    currentContainer = currentSection.getBlockStateContainer();
-                                    currentContainer.lock();
-                                } else {
-                                    currentContainer = null;
-                                    currentSection = null;
-                                }
-                            }
-
-                            if (currentContainer != null) {
-                                BlockState oldState = currentContainer.swapUnsafe(lx, ly, lz, state);
-
-                                if (oldState != state) {
-                                    currentChunk.getHeightmap(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING).trackUpdate(lx, gy, lz, state);
-                                    currentChunk.getHeightmap(net.minecraft.world.Heightmap.Type.WORLD_SURFACE).trackUpdate(lx, gy, lz, state);
-
-                                    if (!moonriseLoaded) {
-                                        currentChunk.getChunkSkyLight().isSkyLightAccessible(currentChunk, lx, gy, lz);
-                                    }
-
-                                    world.getLightingProvider().checkBlock(mutable.set(gx, gy, gz));
-
-                                    currentSection.calculateCounts();
-                                    currentChunk.setNeedsSaving(true);
-                                    chunksToUpdateClient.putIfAbsent(currentChunk, 0);
                                 }
                             }
                         }
+                    } finally {
+                        targetContainer.unlock();
                     }
+                    targetSection.calculateCounts();
                 }
             }
-        } finally {
-            if (currentContainer != null) currentContainer.unlock();
         }
 
-        // Вставка BlockEntities (сундуков, спавнеров) с точным смещением
         for (BigStructureReader.BlockEntityData bed : data.blockEntities()) {
             int gx = (data.cx() << 4) + bed.lx() + offsetX;
             int gy = (data.sy() << 4) + bed.ly() + offsetY;
@@ -248,21 +246,22 @@ public class StructureLoadTask {
             BlockPos globalPos = new BlockPos(gx, gy, gz);
             WorldChunk chunk = world.getChunk(gx >> 4, gz >> 4);
 
-            net.minecraft.nbt.NbtCompound nbt = bed.nbt().copy();
-            nbt.putInt("x", globalPos.getX());
-            nbt.putInt("y", globalPos.getY());
-            nbt.putInt("z", globalPos.getZ());
+            if (chunk != null) {
+                net.minecraft.nbt.NbtCompound nbt = bed.nbt().copy();
+                nbt.putInt("x", globalPos.getX());
+                nbt.putInt("y", globalPos.getY());
+                nbt.putInt("z", globalPos.getZ());
 
-            net.minecraft.block.entity.BlockEntity be = net.minecraft.block.entity.BlockEntity.createFromNbt(globalPos, chunk.getBlockState(globalPos), nbt, world.getRegistryManager());
-            if (be != null) {
-                chunk.setBlockEntity(be);
-                chunksToUpdateClient.putIfAbsent(chunk, 0);
+                net.minecraft.block.entity.BlockEntity be = net.minecraft.block.entity.BlockEntity.createFromNbt(globalPos, chunk.getBlockState(globalPos), nbt, world.getRegistryManager());
+                if (be != null) {
+                    chunk.setBlockEntity(be);
+                    chunksToUpdateClient.putIfAbsent(chunk, 0);
+                }
             }
         }
     }
 
     private void spawnEntity(BigStructureReader.EntityData data) {
-        // Вычисляем точную позицию Entity с новым поблочным смещением
         net.minecraft.util.math.Vec3d pos = new net.minecraft.util.math.Vec3d(
                 data.x() + reader.origin.getX() + offsetX,
                 data.y() + reader.origin.getY() + offsetY,
