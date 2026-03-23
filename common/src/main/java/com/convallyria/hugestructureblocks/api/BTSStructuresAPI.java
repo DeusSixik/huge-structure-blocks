@@ -11,10 +11,11 @@ import net.minecraft.util.math.BlockPos;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CompletableFuture;
 
 public class BTSStructuresAPI {
 
-    public static void loadStructure(ServerWorld world, BlockPos position, String structureName) throws StructureGenerationException, IOException {
+    public static CompletableFuture<Void> loadStructure(ServerWorld world, BlockPos position, String structureName) throws StructureGenerationException, IOException {
         Path filePath = BSConfig.STRUCTURES_FOLDER.resolve(structureName + ".bin");
 
         if (!Files.exists(filePath)) {
@@ -26,6 +27,8 @@ public class BTSStructuresAPI {
         int offsetY = position.getY() - reader.origin.getY();
         int offsetZ = position.getZ() - reader.origin.getZ();
 
-        new StructureLoadTask(world, reader, offsetX, offsetY, offsetZ).start();
+        StructureLoadTask task = new StructureLoadTask(world, reader, offsetX, offsetY, offsetZ);
+        task.start();
+        return task.getFuture();
     }
 }

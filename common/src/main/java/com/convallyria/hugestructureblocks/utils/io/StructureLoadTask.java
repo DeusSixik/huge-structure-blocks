@@ -13,6 +13,7 @@ import net.minecraft.world.chunk.*;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 public class StructureLoadTask {
 
@@ -33,13 +34,16 @@ public class StructureLoadTask {
     private boolean eofReached = false;
     private boolean isFinished = false;
 
+    private final CompletableFuture<Void> endFuture;
+
     public StructureLoadTask(ServerWorld world, BigStructureReader reader, int offsetX, int offsetY, int offsetZ) {
         this.world = world;
         this.reader = reader;
         this.offsetX = offsetX;
         this.offsetY = offsetY;
         this.offsetZ = offsetZ;
-        this.moonriseLoaded = Platform.isModLoaded("moonrise"); // Кэшируем вызов для скорости
+        this.moonriseLoaded = Platform.isModLoaded("moonrise");
+        this.endFuture = new CompletableFuture<>();
     }
 
     public void start() {
@@ -144,6 +148,7 @@ public class StructureLoadTask {
 
         } catch (IOException e) {
             System.err.println("I/O Error during structure load: " + e.getMessage());
+            endFuture.completeExceptionally(e);
             finish();
         }
     }
@@ -288,11 +293,23 @@ public class StructureLoadTask {
     }
 
     private void finish() {
+        if (isFinished) return;
         isFinished = true;
+
         try {
             reader.close();
+            if (!endFuture.isDone()) {
+                endFuture.complete(null);
+            }
         } catch (Exception e) {
             e.printStackTrace();
+            if (!endFuture.isDone()) {
+                endFuture.completeExceptionally(e);
+            }
         }
+    }
+
+    public CompletableFuture<Void> getFuture() {
+        return endFuture;
     }
 }

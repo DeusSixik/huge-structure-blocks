@@ -17,6 +17,13 @@ public class BTSStructureTemplate extends StructureTemplate {
         this.writer = writer;
     }
 
+    private StructureSaveTask structureSaveTask;
+
+    @Nullable
+    public StructureSaveTask getTask() {
+        return structureSaveTask;
+    }
+
     @Override
     public void saveFromWorld(World world, BlockPos start, Vec3i dimensions, boolean includeEntities, @Nullable Block ignoredBlock) {
         if (dimensions.getX() < 1 || dimensions.getY() < 1 || dimensions.getZ() < 1 || !(world instanceof ServerWorld serverWorld)) {
@@ -26,6 +33,7 @@ public class BTSStructureTemplate extends StructureTemplate {
         BlockPos end = start.add(dimensions).add(-1, -1, -1);
 
         // Запускаем State Machine
-        new StructureSaveTask(serverWorld, writer, start, end).start();
+        structureSaveTask = new StructureSaveTask(serverWorld, writer, start, end);
+        structureSaveTask.start();
     }
 }

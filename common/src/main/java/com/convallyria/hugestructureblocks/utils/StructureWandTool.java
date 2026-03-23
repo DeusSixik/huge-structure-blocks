@@ -192,6 +192,16 @@ public class StructureWandTool {
 
             template.saveFromWorld(player.getServerWorld(), minPos, box.getDimensions(), false, null);
 
+            template.getTask().getFuture().whenComplete((res, ex) -> {
+                player.server.execute(() -> {
+                    if (ex != null) {
+                        player.sendMessage(Text.literal("§cОшибка при сохранении: " + ex.getMessage()));
+                    } else {
+                        player.sendMessage(Text.literal("§aСтруктура успешно сохранена в файл!"));
+                    }
+                });
+            });
+
             source.sendFeedback(() -> Text.literal("Сохранение структуры " + name + " запущено в фоне."), false);
 
         } catch (Exception e) {
@@ -236,7 +246,15 @@ public class StructureWandTool {
         String name = StringArgumentType.getString(context, "name");
 
         try {
-            BTSStructuresAPI.loadStructure(player.getServerWorld(), player.getBlockPos(), name);
+            BTSStructuresAPI.loadStructure(player.getServerWorld(), player.getBlockPos(), name).whenComplete((res, ex) -> {
+                player.server.execute(() -> {
+                    if (ex != null) {
+                        player.sendMessage(Text.literal("§cОшибка при загрузке структуры!").styled(s -> s.withColor(0xFF0000)));
+                    } else {
+                        player.sendMessage(Text.literal("§aСтруктура '" + name + "' успешно и полностью загружена!").styled(s -> s.withColor(0x00FF00)));
+                    }
+                });
+            });
         }
         catch (Exception e) {
             source.sendError(Text.literal("Ошибка инициализации чтения: " + e.getMessage()));

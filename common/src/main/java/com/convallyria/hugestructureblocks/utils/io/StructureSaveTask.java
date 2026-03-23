@@ -16,6 +16,7 @@ import net.minecraft.world.chunk.WorldChunk;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 public class StructureSaveTask {
 
@@ -34,12 +35,16 @@ public class StructureSaveTask {
     private final Set<ChunkPos> loadingChunks = new HashSet<>();
     private boolean isFinished = false;
 
+    private final CompletableFuture<Void> endFuture;
+
     public StructureSaveTask(ServerWorld world, BigStructureWriter writer, BlockPos start, BlockPos end) {
         this.world = world;
         this.writer = writer;
         this.start = start;
         this.end = end;
         this.box = BlockBox.create(start, end);
+
+        this.endFuture = new CompletableFuture<>();
 
         ChunkPos startChunk = new ChunkPos(start);
         ChunkPos endChunk = new ChunkPos(end);
@@ -50,6 +55,10 @@ public class StructureSaveTask {
         }
     }
 
+    public CompletableFuture<Void> getFuture() {
+        return endFuture;
+    }
+
     public void start() {
         TickEvent.SERVER_POST.register(this::tick);
     }
@@ -57,34 +66,42 @@ public class StructureSaveTask {
     private void tick(MinecraftServer server) {
         if (isFinished) return;
 
-        if (pendingChunks.isEmpty() && loadingChunks.isEmpty()) {
-            finish();
-            return;
-        }
-
-        // 1. Подкидываем тикеты для не загруженных чанков
-        while (loadingChunks.size() < MAX_CONCURRENT_CHUNKS && !pendingChunks.isEmpty()) {
-            ChunkPos pos = pendingChunks.poll();
-            loadingChunks.add(pos);
-            // Радиус 2 гарантирует полную загрузку чанка (уровень 31)
-            world.getChunkManager().addTicket(TICKET, pos, 2, pos);
-        }
-
-        // 2. HOT PATH: Проверяем готовность чанков без блокировки потока
-        Iterator<ChunkPos> iterator = loadingChunks.iterator();
-        while (iterator.hasNext()) {
-            ChunkPos pos = iterator.next();
-
-            // ВАЖНО: allowLoading = false. Если чанк еще не подгрузился с диска, метод вернет null и не повесит сервер.
-            Chunk chunk = world.getChunk(pos.x, pos.z, ChunkStatus.FULL, false);
-
-            if (chunk instanceof WorldChunk worldChunk) {
-                processChunk(pos.x, pos.z, worldChunk);
-
-                // Сразу убираем тикет. ChunkManager выгрузит его при следующей очистке памяти.
-                world.getChunkManager().removeTicket(TICKET, pos, 2, pos);
-                iterator.remove();
+        try {
+            if (pendingChunks.isEmpty() && loadingChunks.isEmpty()) {
+                finish();
+                return;
             }
+
+            // 1. Подкидываем тикеты для не загруженных чанков
+            while (loadingChunks.size() < MAX_CONCURRENT_CHUNKS && !pendingChunks.isEmpty()) {
+                ChunkPos pos = pendingChunks.poll();
+                loadingChunks.add(pos);
+                // Радиус 2 гарантирует полную загрузку чанка (уровень 31)
+                world.getChunkManager().addTicket(TICKET, pos, 2, pos);
+            }
+
+            // 2. HOT PATH: Проверяем готовность чанков без блокировки потока
+            Iterator<ChunkPos> iterator = loadingChunks.iterator();
+            while (iterator.hasNext()) {
+                ChunkPos pos = iterator.next();
+
+                // ВАЖНО: allowLoading = false. Если чанк еще не подгрузился с диска, метод вернет null и не повесит сервер.
+                Chunk chunk = world.getChunk(pos.x, pos.z, ChunkStatus.FULL, false);
+
+                if (chunk instanceof WorldChunk worldChunk) {
+                    processChunk(pos.x, pos.z, worldChunk);
+
+                    // Сразу убираем тикет. ChunkManager выгрузит его при следующей очистке памяти.
+                    world.getChunkManager().removeTicket(TICKET, pos, 2, pos);
+                    iterator.remove();
+                }
+            }
+        } catch (Exception e) {
+            HugeStructureBlocksMod.LOGGER.error("Critical error during structure save tick", e);
+            if (!endFuture.isDone()) {
+                endFuture.completeExceptionally(e);
+            }
+            finish();
         }
     }
 
@@ -127,11 +144,19 @@ public class StructureSaveTask {
     }
 
     private void finish() {
+        if (isFinished) return;
         isFinished = true;
+
         try {
             writer.close();
+            if (!endFuture.isDone()) {
+                endFuture.complete(null);
+            }
         } catch (Exception e) {
             HugeStructureBlocksMod.LOGGER.error(e.getMessage(), e);
+            if (!endFuture.isDone()) {
+                endFuture.completeExceptionally(e);
+            }
         }
     }
 }
