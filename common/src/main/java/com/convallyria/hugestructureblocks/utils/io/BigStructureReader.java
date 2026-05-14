@@ -1,6 +1,7 @@
 package com.convallyria.hugestructureblocks.utils.io;
 
 import io.netty.buffer.Unpooled;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
@@ -15,6 +16,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.zip.GZIPInputStream;
 
@@ -27,6 +29,7 @@ public class BigStructureReader implements AutoCloseable {
     private final DataInputStream in;
     private final PacketByteBuf buffer;
     private final int formatVersion;
+    private final Object2ObjectOpenHashMap<String, BlockState> decodedStateCache = new Object2ObjectOpenHashMap<>();
 
     public final int sizeX;
     public final int sizeY;
@@ -112,13 +115,14 @@ public class BigStructureReader implements AutoCloseable {
         int maxX = in.readUnsignedByte(); int maxY = in.readUnsignedByte(); int maxZ = in.readUnsignedByte();
 
         int paletteSize = in.readInt();
-        if (paletteSize <= 0 || paletteSize > MAX_PALETTE_SIZE) {
+        if (paletteSize <= 0 || paletteSize > MAX_PALETTE_SIZE || paletteSize > Character.MAX_VALUE) {
             throw new IOException("Desync detected! Corrupted palette size: " + paletteSize);
         }
 
         BlockState[] palette = new BlockState[paletteSize];
         for (int i = 0; i < paletteSize; i++) {
-            palette[i] = StableBlockStateCodec.decode(in.readUTF());
+            String encodedState = in.readUTF();
+            palette[i] = decodedStateCache.computeIfAbsent(encodedState, StableBlockStateCodec::decode);
         }
 
         int bits = in.readUnsignedByte();
@@ -133,19 +137,18 @@ public class BigStructureReader implements AutoCloseable {
             throw new IOException("Desync detected! Corrupted packed length: " + packedLength);
         }
 
-        long[] packedStates = new long[packedLength];
-        for (int i = 0; i < packedStates.length; i++) {
-            packedStates[i] = in.readLong();
-        }
-
-        int[] blockStateIds = unpackBlockStateIds(packedStates, bits, paletteSize);
+        char[] blockStateIds = readPackedBlockStateIds(bits, paletteSize, packedLength);
         List<BlockEntityData> blockEntities = readBlockEntities();
         return new SectionData(cx, sy, cz, minX, minY, minZ, maxX, maxY, maxZ, null, palette, blockStateIds, blockEntities);
     }
 
     private List<BlockEntityData> readBlockEntities() throws IOException {
         int beCount = in.readInt();
-        List<BlockEntityData> blockEntities = new ArrayList<>();
+        if (beCount == 0) {
+            return Collections.emptyList();
+        }
+
+        List<BlockEntityData> blockEntities = new ArrayList<>(beCount);
         for (int i = 0; i < beCount; i++) {
             int lx = in.readUnsignedByte(); int ly = in.readUnsignedByte(); int lz = in.readUnsignedByte();
             net.minecraft.nbt.NbtCompound nbt = net.minecraft.nbt.NbtIo.readCompound(in, net.minecraft.nbt.NbtSizeTracker.ofUnlimitedBytes());
@@ -160,22 +163,25 @@ public class BigStructureReader implements AutoCloseable {
         buffer.release();
     }
 
-    private static int[] unpackBlockStateIds(long[] packedStates, int bits, int paletteSize) throws IOException {
-        int[] blockStateIds = new int[SECTION_VOLUME];
+    private char[] readPackedBlockStateIds(int bits, int paletteSize, int packedLength) throws IOException {
+        char[] blockStateIds = new char[SECTION_VOLUME];
         if (bits == 0) {
             return blockStateIds;
         }
 
         int valuesPerLong = Long.SIZE / bits;
         long mask = (1L << bits) - 1L;
-        for (int i = 0; i < blockStateIds.length; i++) {
-            int longIndex = i / valuesPerLong;
-            int bitOffset = (i % valuesPerLong) * bits;
-            int paletteId = (int) ((packedStates[longIndex] >>> bitOffset) & mask);
-            if (paletteId < 0 || paletteId >= paletteSize) {
-                throw new IOException("Desync detected! Palette id out of bounds: " + paletteId);
+        int valueIndex = 0;
+        for (int longIndex = 0; longIndex < packedLength; longIndex++) {
+            long packed = in.readLong();
+            for (int valueInLong = 0; valueInLong < valuesPerLong && valueIndex < SECTION_VOLUME; valueInLong++) {
+                int bitOffset = valueInLong * bits;
+                int paletteId = (int) ((packed >>> bitOffset) & mask);
+                if (paletteId < 0 || paletteId >= paletteSize) {
+                    throw new IOException("Desync detected! Palette id out of bounds: " + paletteId);
+                }
+                blockStateIds[valueIndex++] = (char) paletteId;
             }
-            blockStateIds[i] = paletteId;
         }
         return blockStateIds;
     }
@@ -197,7 +203,7 @@ public class BigStructureReader implements AutoCloseable {
     }
 
     public record SectionData(int cx, int sy, int cz, int minX, int minY, int minZ, int maxX, int maxY, int maxZ,
-                              PalettedContainer<BlockState> container, BlockState[] palette, int[] blockStateIds,
+                              PalettedContainer<BlockState> container, BlockState[] palette, char[] blockStateIds,
                               List<BlockEntityData> blockEntities) {
         public BlockState getState(int x, int y, int z) {
             if (palette != null && blockStateIds != null) {

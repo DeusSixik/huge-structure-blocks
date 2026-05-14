@@ -1,6 +1,11 @@
 package com.convallyria.hugestructureblocks.utils.io;
 
 import dev.architectury.event.events.common.TickEvent;
+import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
+import it.unimi.dsi.fastutil.objects.*;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.server.MinecraftServer;
@@ -10,6 +15,8 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.chunk.*;
+import net.minecraft.world.chunk.light.ChunkLightProvider;
+import net.minecraft.world.chunk.light.LightingProvider;
 
 import java.io.IOException;
 import java.util.*;
@@ -17,10 +24,11 @@ import java.util.concurrent.CompletableFuture;
 
 public class StructureLoadTask {
 
-    private final Map<WorldChunk, Integer> chunksToUpdateClient = new HashMap<>();
-    private final Map<WorldChunk, CompletableFuture<?>> chunkLightBarriers = new HashMap<>();
-    private final Map<WorldChunk, Set<ChunkPos>> chunkLightTickets = new HashMap<>();
-    private final Map<ChunkPos, Integer> loadTicketRefs = new HashMap<>();
+    private final Reference2IntOpenHashMap<WorldChunk> chunksToUpdateClient = new Reference2IntOpenHashMap<>();
+    private final Reference2ObjectOpenHashMap<WorldChunk, CompletableFuture<?>> chunkLightBarriers = new Reference2ObjectOpenHashMap<>();
+    private final Reference2ObjectOpenHashMap<WorldChunk, LongSet> chunkLightTickets = new Reference2ObjectOpenHashMap<>();
+    private final Long2IntOpenHashMap loadTicketRefs = new Long2IntOpenHashMap();
+    private final ReferenceOpenHashSet<WorldChunk> changedChunksBuffer = new ReferenceOpenHashSet<>();
     private static final ChunkTicketType<ChunkPos> LOAD_TICKET = ChunkTicketType.create("bts_load", Comparator.comparingLong(ChunkPos::toLong));
     private static final int SECTIONS_PER_TICK = 50;
     private static final int CLIENT_UPDATE_DELAY_TICKS = 5;
@@ -33,7 +41,7 @@ public class StructureLoadTask {
     private final int offsetZ;
 
     private final List<BigStructureReader.SectionData> pendingSections = new ArrayList<>();
-    private final List<BigStructureReader.EntityData> pendingEntities = new ArrayList<>();
+    private final Deque<BigStructureReader.EntityData> pendingEntities = new ArrayDeque<>();
     private boolean eofReached = false;
     private boolean isFinished = false;
 
@@ -46,6 +54,7 @@ public class StructureLoadTask {
         this.offsetY = offsetY;
         this.offsetZ = offsetZ;
         this.endFuture = new CompletableFuture<>();
+        this.loadTicketRefs.defaultReturnValue(0);
     }
 
     public void start() {
@@ -73,8 +82,7 @@ public class StructureLoadTask {
 
                     for (int cx = minCx; cx <= maxCx; cx++) {
                         for (int cz = minCz; cz <= maxCz; cz++) {
-                            ChunkPos targetPos = new ChunkPos(cx, cz);
-                            retainLoadTicket(targetPos);
+                            retainLoadTicket(ChunkPos.toLong(cx, cz));
                         }
                     }
                 } else if (record instanceof BigStructureReader.EntityData ed) {
@@ -102,8 +110,7 @@ public class StructureLoadTask {
 
                 for (int cx = minCx; cx <= maxCx; cx++) {
                     for (int cz = minCz; cz <= maxCz; cz++) {
-                        ChunkPos targetPos = new ChunkPos(cx, cz);
-                        releaseLoadTicket(targetPos);
+                        releaseLoadTicket(ChunkPos.toLong(cx, cz));
                     }
                 }
                 return true;
@@ -111,12 +118,12 @@ public class StructureLoadTask {
 
             if (!chunksToUpdateClient.isEmpty()) {
                 int viewDistance = world.getServer().getPlayerManager().getViewDistance();
-                Iterator<Map.Entry<WorldChunk, Integer>> iterator = chunksToUpdateClient.entrySet().iterator();
+                ObjectIterator<Reference2IntMap.Entry<WorldChunk>> iterator = Reference2IntMaps.fastIterator(chunksToUpdateClient);
 
                 while (iterator.hasNext()) {
-                    Map.Entry<WorldChunk, Integer> entry = iterator.next();
+                    Reference2IntMap.Entry<WorldChunk> entry = iterator.next();
                     WorldChunk chunk = entry.getKey();
-                    int age = entry.getValue();
+                    int age = entry.getIntValue();
                     ChunkPos pos = chunk.getPos();
 
                     if (age >= CLIENT_UPDATE_DELAY_TICKS && isChunkLightingReady(chunk, pos)) {
@@ -142,7 +149,7 @@ public class StructureLoadTask {
                 if (!pendingEntities.isEmpty()) {
                     int spawned = 0;
                     while (!pendingEntities.isEmpty() && spawned < 50) {
-                        spawnEntity(pendingEntities.remove(0));
+                        spawnEntity(pendingEntities.removeFirst());
                         spawned++;
                     }
                 } else {
@@ -176,8 +183,14 @@ public class StructureLoadTask {
         int minSy = minGy >> 4; int maxSy = maxGy >> 4;
         int minCz = minGz >> 4; int maxCz = maxGz >> 4;
 
+        LightingProvider lightingProvider = world.getLightingProvider();
         BlockPos.Mutable mutable = new BlockPos.Mutable();
-        Set<WorldChunk> changedChunks = new HashSet<>();
+        ReferenceOpenHashSet<WorldChunk> changedChunks = changedChunksBuffer;
+        changedChunks.clear();
+        BlockState[] sourcePalette = data.palette();
+        char[] sourceIds = data.blockStateIds();
+        PalettedContainer<BlockState> sourceContainer = data.container();
+        boolean stableSource = sourcePalette != null && sourceIds != null;
 
         for (int tCx = minCx; tCx <= maxCx; tCx++) {
             for (int tCz = minCz; tCz <= maxCz; tCz++) {
@@ -197,6 +210,10 @@ public class StructureLoadTask {
                     }
 
                     PalettedContainer<BlockState> targetContainer = targetSection.getBlockStateContainer();
+                    net.minecraft.world.Heightmap motionBlocking = targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING);
+                    net.minecraft.world.Heightmap motionBlockingNoLeaves = targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES);
+                    net.minecraft.world.Heightmap oceanFloor = targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.OCEAN_FLOOR);
+                    net.minecraft.world.Heightmap worldSurface = targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.WORLD_SURFACE);
 
                     int startGx = Math.max(tCx << 4, minGx);
                     int endGx = Math.min((tCx << 4) + 15, maxGx);
@@ -205,35 +222,43 @@ public class StructureLoadTask {
                     int startGz = Math.max(tCz << 4, minGz);
                     int endGz = Math.min((tCz << 4) + 15, maxGz);
 
+                    boolean sectionChanged = false;
                     targetContainer.lock();
                     try {
                         for (int gy = startGy; gy <= endGy; gy++) {
                             int y = gy - offsetY - (data.sy() << 4);
+                            int sourceYIndex = y << 8;
                             int ly = gy & 15;
 
                             for (int gz = startGz; gz <= endGz; gz++) {
                                 int z = gz - offsetZ - (data.cz() << 4);
+                                int sourceZIndex = z << 4;
                                 int lz = gz & 15;
 
                                 for (int gx = startGx; gx <= endGx; gx++) {
                                     int x = gx - offsetX - (data.cx() << 4);
                                     int lx = gx & 15;
 
-                                    BlockState state = data.getState(x, y, z);
+                                    BlockState state = stableSource
+                                            ? sourcePalette[sourceIds[sourceYIndex | sourceZIndex | x]]
+                                            : sourceContainer.get(x, y, z);
                                     if (state != voidState) {
                                         BlockState oldState = targetContainer.swapUnsafe(lx, ly, lz, state);
 
                                         if (oldState != state) {
-                                            targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING).trackUpdate(lx, gy, lz, state);
-                                            targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES).trackUpdate(lx, gy, lz, state);
-                                            targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.OCEAN_FLOOR).trackUpdate(lx, gy, lz, state);
-                                            targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.WORLD_SURFACE).trackUpdate(lx, gy, lz, state);
+                                            motionBlocking.trackUpdate(lx, gy, lz, state);
+                                            motionBlockingNoLeaves.trackUpdate(lx, gy, lz, state);
+                                            oceanFloor.trackUpdate(lx, gy, lz, state);
+                                            worldSurface.trackUpdate(lx, gy, lz, state);
 
-                                            targetChunk.getChunkSkyLight().isSkyLightAccessible(targetChunk, lx, gy, lz);
-                                            world.getLightingProvider().checkBlock(mutable.set(gx, gy, gz));
+                                            mutable.set(gx, gy, gz);
+                                            if (ChunkLightProvider.needsLightUpdate(targetChunk, mutable, oldState, state)) {
+                                                lightingProvider.checkBlock(mutable);
+                                            }
 
                                             targetChunk.setNeedsSaving(true);
                                             changedChunks.add(targetChunk);
+                                            sectionChanged = true;
                                         }
                                     }
                                 }
@@ -242,11 +267,14 @@ public class StructureLoadTask {
                     } finally {
                         targetContainer.unlock();
                     }
-                    targetSection.calculateCounts();
 
-                    boolean isEmpty = targetSection.isEmpty();
-                    if (wasEmpty != isEmpty) {
-                        world.getLightingProvider().setSectionStatus(net.minecraft.util.math.ChunkSectionPos.from(tCx, tSy, tCz), isEmpty);
+                    if (sectionChanged) {
+                        targetSection.calculateCounts();
+
+                        boolean isEmpty = targetSection.isEmpty();
+                        if (wasEmpty != isEmpty) {
+                            lightingProvider.setSectionStatus(net.minecraft.util.math.ChunkSectionPos.from(tCx, tSy, tCz), isEmpty);
+                        }
                     }
                 }
             }
@@ -290,12 +318,12 @@ public class StructureLoadTask {
         chunkLightTickets.computeIfAbsent(chunk, this::retainChunkAndLightingNeighbors);
     }
 
-    private Set<ChunkPos> retainChunkAndLightingNeighbors(WorldChunk chunk) {
-        Set<ChunkPos> retained = new HashSet<>();
+    private LongSet retainChunkAndLightingNeighbors(WorldChunk chunk) {
+        LongSet retained = new LongOpenHashSet(9);
         ChunkPos center = chunk.getPos();
         for (int cx = center.x - 1; cx <= center.x + 1; cx++) {
             for (int cz = center.z - 1; cz <= center.z + 1; cz++) {
-                ChunkPos pos = new ChunkPos(cx, cz);
+                long pos = ChunkPos.toLong(cx, cz);
                 retained.add(pos);
                 retainLoadTicket(pos);
             }
@@ -304,40 +332,45 @@ public class StructureLoadTask {
     }
 
     private void releaseChunkLightTickets(WorldChunk chunk) {
-        Set<ChunkPos> retained = chunkLightTickets.remove(chunk);
+        LongSet retained = chunkLightTickets.remove(chunk);
         if (retained == null) {
             return;
         }
-        for (ChunkPos pos : retained) {
-            releaseLoadTicket(pos);
+        LongIterator iterator = retained.iterator();
+        while (iterator.hasNext()) {
+            releaseLoadTicket(iterator.nextLong());
         }
     }
 
-    private void retainLoadTicket(ChunkPos pos) {
-        Integer refs = loadTicketRefs.get(pos);
-        if (refs == null) {
+    private void retainLoadTicket(long packedPos) {
+        int refs = loadTicketRefs.get(packedPos);
+        if (refs == 0) {
+            ChunkPos pos = new ChunkPos(packedPos);
             world.getChunkManager().addTicket(LOAD_TICKET, pos, 2, pos);
-            loadTicketRefs.put(pos, 1);
+            loadTicketRefs.put(packedPos, 1);
         } else {
-            loadTicketRefs.put(pos, refs + 1);
+            loadTicketRefs.put(packedPos, refs + 1);
         }
     }
 
-    private void releaseLoadTicket(ChunkPos pos) {
-        Integer refs = loadTicketRefs.get(pos);
-        if (refs == null) {
+    private void releaseLoadTicket(long packedPos) {
+        int refs = loadTicketRefs.get(packedPos);
+        if (refs <= 0) {
             return;
         }
-        if (refs <= 1) {
-            loadTicketRefs.remove(pos);
+        if (refs == 1) {
+            loadTicketRefs.remove(packedPos);
+            ChunkPos pos = new ChunkPos(packedPos);
             world.getChunkManager().removeTicket(LOAD_TICKET, pos, 2, pos);
         } else {
-            loadTicketRefs.put(pos, refs - 1);
+            loadTicketRefs.put(packedPos, refs - 1);
         }
     }
 
     private void releaseAllLoadTickets() {
-        for (ChunkPos pos : new ArrayList<>(loadTicketRefs.keySet())) {
+        LongIterator iterator = loadTicketRefs.keySet().iterator();
+        while (iterator.hasNext()) {
+            ChunkPos pos = new ChunkPos(iterator.nextLong());
             world.getChunkManager().removeTicket(LOAD_TICKET, pos, 2, pos);
         }
         loadTicketRefs.clear();

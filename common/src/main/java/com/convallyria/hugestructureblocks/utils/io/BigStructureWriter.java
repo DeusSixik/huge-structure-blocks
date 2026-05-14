@@ -1,5 +1,7 @@
 package com.convallyria.hugestructureblocks.utils.io;
 
+import it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.nbt.NbtCompound;
@@ -16,9 +18,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.IdentityHashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.zip.GZIPOutputStream;
 
 public class BigStructureWriter implements AutoCloseable {
@@ -26,14 +27,24 @@ public class BigStructureWriter implements AutoCloseable {
     static final int MAGIC = 0x48534232; // HSB2
     static final int VERSION_STABLE_PALETTE = 2;
     private static final int SECTION_VOLUME = 16 * 16 * 16;
+    private static final int MAX_SECTION_PALETTE_SIZE = SECTION_VOLUME + 1;
 
     public final BlockPos origin;
     public final Path filePath;
     protected @Nullable DataOutputStream out;
+    // Stores per-section palette indexes, not global/raw block state IDs.
+    // A 16x16x16 section can reference at most 4096 states plus STRUCTURE_VOID.
+    private final char[] sectionBlockStateIds = new char[SECTION_VOLUME];
+    private final long[] sectionPackedStates = new long[SECTION_VOLUME];
+    private final List<BlockState> sectionPalette = new ArrayList<>(64);
+    private final Reference2IntOpenHashMap<BlockState> sectionPaletteIds = new Reference2IntOpenHashMap<>(64);
+    private final List<BEData> blockEntityBuffer = new ArrayList<>();
+    private final Reference2ObjectOpenHashMap<BlockState, String> encodedStateCache = new Reference2ObjectOpenHashMap<>();
 
     public BigStructureWriter(Path filePath, BlockPos origin) {
         this.origin = origin;
         this.filePath = filePath;
+        this.sectionPaletteIds.defaultReturnValue(-1);
     }
 
     protected DataOutputStream createStream(Path filePath) throws IOException {
@@ -86,21 +97,21 @@ public class BigStructureWriter implements AutoCloseable {
         PalettedContainer<BlockState> source = section.getBlockStateContainer();
         boolean hasData = false;
 
-        List<BEData> blockEntities = new ArrayList<>();
-        List<BlockState> palette = new ArrayList<>();
-        Map<BlockState, Integer> paletteIds = new IdentityHashMap<>();
-        int[] blockStateIds = new int[SECTION_VOLUME];
+        Arrays.fill(sectionBlockStateIds, (char) 0);
+        sectionPalette.clear();
+        sectionPaletteIds.clear();
+        blockEntityBuffer.clear();
 
         BlockState voidState = Blocks.STRUCTURE_VOID.getDefaultState();
-        palette.add(voidState);
-        paletteIds.put(voidState, 0);
+        sectionPalette.add(voidState);
+        sectionPaletteIds.put(voidState, 0);
 
         for (int y = minY; y <= maxY; y++) {
             for (int z = minZ; z <= maxZ; z++) {
                 for (int x = minX; x <= maxX; x++) {
                     BlockState state = source.get(x, y, z);
                     if (!state.isAir()) {
-                        blockStateIds[sectionIndex(x, y, z)] = getPaletteId(state, palette, paletteIds);
+                        sectionBlockStateIds[sectionIndex(x, y, z)] = (char) getPaletteId(state, sectionPalette, sectionPaletteIds);
                         hasData = true;
 
                         if (state.hasBlockEntity()) {
@@ -109,7 +120,7 @@ public class BigStructureWriter implements AutoCloseable {
                             if (be != null) {
                                 NbtCompound nbt = be.createNbtWithId(chunk.getWorld().getRegistryManager());
                                 if (nbt != null) {
-                                    blockEntities.add(new BEData(x, y, z, nbt));
+                                    blockEntityBuffer.add(new BEData(x, y, z, nbt));
                                 }
                             }
                         }
@@ -126,21 +137,21 @@ public class BigStructureWriter implements AutoCloseable {
         out.writeByte(minX); out.writeByte(minY); out.writeByte(minZ);
         out.writeByte(maxX); out.writeByte(maxY); out.writeByte(maxZ);
 
-        out.writeInt(palette.size());
-        for (BlockState state : palette) {
-            out.writeUTF(StableBlockStateCodec.encode(state));
+        out.writeInt(sectionPalette.size());
+        for (BlockState state : sectionPalette) {
+            out.writeUTF(encodedStateCache.computeIfAbsent(state, StableBlockStateCodec::encode));
         }
 
-        int bits = bitsNeeded(palette.size() - 1);
-        long[] packedStates = packBlockStateIds(blockStateIds, bits);
+        int bits = bitsNeeded(sectionPalette.size() - 1);
+        int packedLength = packBlockStateIds(sectionBlockStateIds, bits, sectionPackedStates);
         out.writeByte(bits);
-        out.writeInt(packedStates.length);
-        for (long packedState : packedStates) {
-            out.writeLong(packedState);
+        out.writeInt(packedLength);
+        for (int i = 0; i < packedLength; i++) {
+            out.writeLong(sectionPackedStates[i]);
         }
 
-        out.writeInt(blockEntities.size());
-        for (BEData be : blockEntities) {
+        out.writeInt(blockEntityBuffer.size());
+        for (BEData be : blockEntityBuffer) {
             out.writeByte(be.lx);
             out.writeByte(be.ly);
             out.writeByte(be.lz);
@@ -169,32 +180,36 @@ public class BigStructureWriter implements AutoCloseable {
         }
     }
 
-    private static int getPaletteId(BlockState state, List<BlockState> palette, Map<BlockState, Integer> paletteIds) {
-        Integer id = paletteIds.get(state);
-        if (id != null) {
+    private static int getPaletteId(BlockState state, List<BlockState> palette, Reference2IntOpenHashMap<BlockState> paletteIds) {
+        int id = paletteIds.getInt(state);
+        if (id != -1) {
             return id;
         }
 
         int newId = palette.size();
+        if (newId >= MAX_SECTION_PALETTE_SIZE || newId > Character.MAX_VALUE) {
+            throw new IllegalStateException("Section palette is too large: " + (newId + 1));
+        }
         palette.add(state);
         paletteIds.put(state, newId);
         return newId;
     }
 
-    private static long[] packBlockStateIds(int[] blockStateIds, int bits) {
+    private static int packBlockStateIds(char[] blockStateIds, int bits, long[] packed) {
         if (bits == 0) {
-            return new long[0];
+            return 0;
         }
 
         int valuesPerLong = Long.SIZE / bits;
         long mask = (1L << bits) - 1L;
-        long[] packed = new long[(blockStateIds.length + valuesPerLong - 1) / valuesPerLong];
+        int packedLength = (blockStateIds.length + valuesPerLong - 1) / valuesPerLong;
+        Arrays.fill(packed, 0, packedLength, 0L);
         for (int i = 0; i < blockStateIds.length; i++) {
             int longIndex = i / valuesPerLong;
             int bitOffset = (i % valuesPerLong) * bits;
             packed[longIndex] |= ((long) blockStateIds[i] & mask) << bitOffset;
         }
-        return packed;
+        return packedLength;
     }
 
     private static int bitsNeeded(int maxValue) {
