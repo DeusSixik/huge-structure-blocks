@@ -155,7 +155,6 @@ public class StructureLoadTask {
 
     private void mergeSectionIntoWorld(BigStructureReader.SectionData data) {
         BlockState voidState = Blocks.STRUCTURE_VOID.getDefaultState();
-        PalettedContainer<BlockState> sourceContainer = data.container();
 
         int minGx = (data.cx() << 4) + data.minX() + offsetX;
         int maxGx = (data.cx() << 4) + data.maxX() + offsetX;
@@ -214,7 +213,7 @@ public class StructureLoadTask {
                                     int x = gx - offsetX - (data.cx() << 4);
                                     int lx = gx & 15;
 
-                                    BlockState state = sourceContainer.get(x, y, z);
+                                    BlockState state = data.getState(x, y, z);
                                     if (state != voidState) {
                                         BlockState oldState = targetContainer.swapUnsafe(lx, ly, lz, state);
 
@@ -244,6 +243,10 @@ public class StructureLoadTask {
         }
 
         for (BigStructureReader.BlockEntityData bed : data.blockEntities()) {
+            if (data.getState(bed.lx(), bed.ly(), bed.lz()) == voidState) {
+                continue;
+            }
+
             int gx = (data.cx() << 4) + bed.lx() + offsetX;
             int gy = (data.sy() << 4) + bed.ly() + offsetY;
             int gz = (data.cz() << 4) + bed.lz() + offsetZ;
