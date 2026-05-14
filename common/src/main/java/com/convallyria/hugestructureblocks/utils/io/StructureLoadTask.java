@@ -1,11 +1,11 @@
 package com.convallyria.hugestructureblocks.utils.io;
 
 import dev.architectury.event.events.common.TickEvent;
-import dev.architectury.platform.Platform;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ChunkTicketType;
+import net.minecraft.server.world.ServerLightingProvider;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
@@ -18,8 +18,12 @@ import java.util.concurrent.CompletableFuture;
 public class StructureLoadTask {
 
     private final Map<WorldChunk, Integer> chunksToUpdateClient = new HashMap<>();
+    private final Map<WorldChunk, CompletableFuture<?>> chunkLightBarriers = new HashMap<>();
+    private final Map<WorldChunk, Set<ChunkPos>> chunkLightTickets = new HashMap<>();
+    private final Map<ChunkPos, Integer> loadTicketRefs = new HashMap<>();
     private static final ChunkTicketType<ChunkPos> LOAD_TICKET = ChunkTicketType.create("bts_load", Comparator.comparingLong(ChunkPos::toLong));
     private static final int SECTIONS_PER_TICK = 50;
+    private static final int CLIENT_UPDATE_DELAY_TICKS = 5;
 
     private final ServerWorld world;
     private final BigStructureReader reader;
@@ -27,7 +31,6 @@ public class StructureLoadTask {
     private final int offsetX;
     private final int offsetY;
     private final int offsetZ;
-    private final boolean moonriseLoaded;
 
     private final List<BigStructureReader.SectionData> pendingSections = new ArrayList<>();
     private final List<BigStructureReader.EntityData> pendingEntities = new ArrayList<>();
@@ -42,7 +45,6 @@ public class StructureLoadTask {
         this.offsetX = offsetX;
         this.offsetY = offsetY;
         this.offsetZ = offsetZ;
-        this.moonriseLoaded = Platform.isModLoaded("moonrise");
         this.endFuture = new CompletableFuture<>();
     }
 
@@ -72,7 +74,7 @@ public class StructureLoadTask {
                     for (int cx = minCx; cx <= maxCx; cx++) {
                         for (int cz = minCz; cz <= maxCz; cz++) {
                             ChunkPos targetPos = new ChunkPos(cx, cz);
-                            world.getChunkManager().addTicket(LOAD_TICKET, targetPos, 2, targetPos);
+                            retainLoadTicket(targetPos);
                         }
                     }
                 } else if (record instanceof BigStructureReader.EntityData ed) {
@@ -101,7 +103,7 @@ public class StructureLoadTask {
                 for (int cx = minCx; cx <= maxCx; cx++) {
                     for (int cz = minCz; cz <= maxCz; cz++) {
                         ChunkPos targetPos = new ChunkPos(cx, cz);
-                        world.getChunkManager().removeTicket(LOAD_TICKET, targetPos, 2, targetPos);
+                        releaseLoadTicket(targetPos);
                     }
                 }
                 return true;
@@ -115,9 +117,9 @@ public class StructureLoadTask {
                     Map.Entry<WorldChunk, Integer> entry = iterator.next();
                     WorldChunk chunk = entry.getKey();
                     int age = entry.getValue();
+                    ChunkPos pos = chunk.getPos();
 
-                    if (age >= 5) {
-                        ChunkPos pos = chunk.getPos();
+                    if (age >= CLIENT_UPDATE_DELAY_TICKS && isChunkLightingReady(chunk, pos)) {
                         net.minecraft.network.packet.s2c.play.ChunkDataS2CPacket chunkPacket = new net.minecraft.network.packet.s2c.play.ChunkDataS2CPacket(chunk, world.getLightingProvider(), null, null);
                         net.minecraft.network.packet.s2c.play.LightUpdateS2CPacket lightPacket = new net.minecraft.network.packet.s2c.play.LightUpdateS2CPacket(pos, world.getLightingProvider(), null, null);
 
@@ -127,6 +129,8 @@ public class StructureLoadTask {
                                 player.networkHandler.send(lightPacket, null);
                             }
                         }
+                        chunkLightBarriers.remove(chunk);
+                        releaseChunkLightTickets(chunk);
                         iterator.remove();
                     } else {
                         entry.setValue(age + 1);
@@ -153,6 +157,11 @@ public class StructureLoadTask {
         }
     }
 
+    private boolean isChunkLightingReady(WorldChunk chunk, ChunkPos pos) {
+        CompletableFuture<?> barrier = chunkLightBarriers.computeIfAbsent(chunk, ignored -> ((ServerLightingProvider) world.getLightingProvider()).light(chunk, false));
+        return barrier.isDone();
+    }
+
     private void mergeSectionIntoWorld(BigStructureReader.SectionData data) {
         BlockState voidState = Blocks.STRUCTURE_VOID.getDefaultState();
 
@@ -168,6 +177,7 @@ public class StructureLoadTask {
         int minCz = minGz >> 4; int maxCz = maxGz >> 4;
 
         BlockPos.Mutable mutable = new BlockPos.Mutable();
+        Set<WorldChunk> changedChunks = new HashSet<>();
 
         for (int tCx = minCx; tCx <= maxCx; tCx++) {
             for (int tCz = minCz; tCz <= maxCz; tCz++) {
@@ -184,10 +194,6 @@ public class StructureLoadTask {
                     if (targetSection == null) {
                         targetSection = new ChunkSection(world.getRegistryManager().get(net.minecraft.registry.RegistryKeys.BIOME));
                         targetChunk.getSectionArray()[sectionIndex] = targetSection;
-                    }
-
-                    if (wasEmpty) {
-                        world.getLightingProvider().setSectionStatus(net.minecraft.util.math.ChunkSectionPos.from(tCx, tSy, tCz), false);
                     }
 
                     PalettedContainer<BlockState> targetContainer = targetSection.getBlockStateContainer();
@@ -219,16 +225,15 @@ public class StructureLoadTask {
 
                                         if (oldState != state) {
                                             targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING).trackUpdate(lx, gy, lz, state);
+                                            targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES).trackUpdate(lx, gy, lz, state);
+                                            targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.OCEAN_FLOOR).trackUpdate(lx, gy, lz, state);
                                             targetChunk.getHeightmap(net.minecraft.world.Heightmap.Type.WORLD_SURFACE).trackUpdate(lx, gy, lz, state);
 
-                                            if (!moonriseLoaded) {
-                                                targetChunk.getChunkSkyLight().isSkyLightAccessible(targetChunk, lx, gy, lz);
-                                            }
-
+                                            targetChunk.getChunkSkyLight().isSkyLightAccessible(targetChunk, lx, gy, lz);
                                             world.getLightingProvider().checkBlock(mutable.set(gx, gy, gz));
 
                                             targetChunk.setNeedsSaving(true);
-                                            chunksToUpdateClient.putIfAbsent(targetChunk, 0);
+                                            changedChunks.add(targetChunk);
                                         }
                                     }
                                 }
@@ -238,6 +243,11 @@ public class StructureLoadTask {
                         targetContainer.unlock();
                     }
                     targetSection.calculateCounts();
+
+                    boolean isEmpty = targetSection.isEmpty();
+                    if (wasEmpty != isEmpty) {
+                        world.getLightingProvider().setSectionStatus(net.minecraft.util.math.ChunkSectionPos.from(tCx, tSy, tCz), isEmpty);
+                    }
                 }
             }
         }
@@ -263,10 +273,75 @@ public class StructureLoadTask {
                 net.minecraft.block.entity.BlockEntity be = net.minecraft.block.entity.BlockEntity.createFromNbt(globalPos, chunk.getBlockState(globalPos), nbt, world.getRegistryManager());
                 if (be != null) {
                     chunk.setBlockEntity(be);
-                    chunksToUpdateClient.putIfAbsent(chunk, 0);
+                    changedChunks.add(chunk);
                 }
             }
         }
+
+        for (WorldChunk changedChunk : changedChunks) {
+            changedChunk.getChunkSkyLight().refreshSurfaceY(changedChunk);
+            markChunkChanged(changedChunk);
+        }
+    }
+
+    private void markChunkChanged(WorldChunk chunk) {
+        chunksToUpdateClient.put(chunk, 0);
+        chunkLightBarriers.remove(chunk);
+        chunkLightTickets.computeIfAbsent(chunk, this::retainChunkAndLightingNeighbors);
+    }
+
+    private Set<ChunkPos> retainChunkAndLightingNeighbors(WorldChunk chunk) {
+        Set<ChunkPos> retained = new HashSet<>();
+        ChunkPos center = chunk.getPos();
+        for (int cx = center.x - 1; cx <= center.x + 1; cx++) {
+            for (int cz = center.z - 1; cz <= center.z + 1; cz++) {
+                ChunkPos pos = new ChunkPos(cx, cz);
+                retained.add(pos);
+                retainLoadTicket(pos);
+            }
+        }
+        return retained;
+    }
+
+    private void releaseChunkLightTickets(WorldChunk chunk) {
+        Set<ChunkPos> retained = chunkLightTickets.remove(chunk);
+        if (retained == null) {
+            return;
+        }
+        for (ChunkPos pos : retained) {
+            releaseLoadTicket(pos);
+        }
+    }
+
+    private void retainLoadTicket(ChunkPos pos) {
+        Integer refs = loadTicketRefs.get(pos);
+        if (refs == null) {
+            world.getChunkManager().addTicket(LOAD_TICKET, pos, 2, pos);
+            loadTicketRefs.put(pos, 1);
+        } else {
+            loadTicketRefs.put(pos, refs + 1);
+        }
+    }
+
+    private void releaseLoadTicket(ChunkPos pos) {
+        Integer refs = loadTicketRefs.get(pos);
+        if (refs == null) {
+            return;
+        }
+        if (refs <= 1) {
+            loadTicketRefs.remove(pos);
+            world.getChunkManager().removeTicket(LOAD_TICKET, pos, 2, pos);
+        } else {
+            loadTicketRefs.put(pos, refs - 1);
+        }
+    }
+
+    private void releaseAllLoadTickets() {
+        for (ChunkPos pos : new ArrayList<>(loadTicketRefs.keySet())) {
+            world.getChunkManager().removeTicket(LOAD_TICKET, pos, 2, pos);
+        }
+        loadTicketRefs.clear();
+        chunkLightTickets.clear();
     }
 
     private void spawnEntity(BigStructureReader.EntityData data) {
@@ -300,6 +375,7 @@ public class StructureLoadTask {
         isFinished = true;
 
         try {
+            releaseAllLoadTickets();
             reader.close();
             if (!endFuture.isDone()) {
                 endFuture.complete(null);
