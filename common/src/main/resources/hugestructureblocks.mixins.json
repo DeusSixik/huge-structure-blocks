@@ -6,6 +6,7 @@
   "mixins": [
     "StructureTemplateManagerMixin",
     "block_entity.BlockEntityMixin",
+    "chunk.ChunkAccessor",
     "structure.JigsawPlacementUnlimit",
     "structure.JigsawStructureUnlimit",
     "structure.PlaceCommandUnlimit",

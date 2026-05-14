@@ -1,5 +1,6 @@
 package com.convallyria.hugestructureblocks.utils.io;
 
+import com.convallyria.hugestructureblocks.mixin.chunk.ChunkAccessor;
 import dev.architectury.event.events.common.TickEvent;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
@@ -8,10 +9,15 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.*;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.block.entity.BlockEntity;
+import net.minecraft.block.entity.BlockEntityType;
+import net.minecraft.nbt.NbtCompound;
+import net.minecraft.registry.Registries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ChunkTicketType;
 import net.minecraft.server.world.ServerLightingProvider;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.chunk.*;
@@ -245,6 +251,13 @@ public class StructureLoadTask {
                                     if (state != voidState) {
                                         BlockState oldState = targetContainer.swapUnsafe(lx, ly, lz, state);
 
+                                        if (oldState.hasBlockEntity() || state.hasBlockEntity()) {
+                                            BlockPos bePos = new BlockPos(gx, gy, gz);
+                                            clearBlockEntity(targetChunk, bePos);
+                                            targetChunk.setNeedsSaving(true);
+                                            changedChunks.add(targetChunk);
+                                        }
+
                                         if (oldState != state) {
                                             motionBlocking.trackUpdate(lx, gy, lz, state);
                                             motionBlockingNoLeaves.trackUpdate(lx, gy, lz, state);
@@ -293,14 +306,24 @@ public class StructureLoadTask {
             WorldChunk chunk = world.getChunk(gx >> 4, gz >> 4);
 
             if (chunk != null) {
-                net.minecraft.nbt.NbtCompound nbt = bed.nbt().copy();
+                NbtCompound nbt = bed.nbt().copy();
                 nbt.putInt("x", globalPos.getX());
                 nbt.putInt("y", globalPos.getY());
                 nbt.putInt("z", globalPos.getZ());
 
-                net.minecraft.block.entity.BlockEntity be = net.minecraft.block.entity.BlockEntity.createFromNbt(globalPos, chunk.getBlockState(globalPos), nbt, world.getRegistryManager());
-                if (be != null) {
+                BlockState currentState = chunk.getBlockState(globalPos);
+                if (!currentState.hasBlockEntity() || !blockEntityNbtSupportsState(nbt, currentState)) {
+                    clearBlockEntity(chunk, globalPos);
+                    chunk.setNeedsSaving(true);
+                    changedChunks.add(chunk);
+                    continue;
+                }
+
+                clearBlockEntity(chunk, globalPos);
+                BlockEntity be = BlockEntity.createFromNbt(globalPos, currentState, nbt, world.getRegistryManager());
+                if (be != null && be.supports(currentState)) {
                     chunk.setBlockEntity(be);
+                    chunk.setNeedsSaving(true);
                     changedChunks.add(chunk);
                 }
             }
@@ -310,6 +333,21 @@ public class StructureLoadTask {
             changedChunk.getChunkSkyLight().refreshSurfaceY(changedChunk);
             markChunkChanged(changedChunk);
         }
+    }
+
+    private static void clearBlockEntity(WorldChunk chunk, BlockPos pos) {
+        ((ChunkAccessor) chunk).huge_structure_blocks$getBlockEntityNbts().remove(pos);
+        chunk.removeBlockEntity(pos);
+    }
+
+    private static boolean blockEntityNbtSupportsState(NbtCompound nbt, BlockState state) {
+        Identifier id = Identifier.tryParse(nbt.getString("id"));
+        if (id == null) {
+            return false;
+        }
+
+        Optional<BlockEntityType<?>> type = Registries.BLOCK_ENTITY_TYPE.getOrEmpty(id);
+        return type.isPresent() && type.get().supports(state);
     }
 
     private void markChunkChanged(WorldChunk chunk) {
